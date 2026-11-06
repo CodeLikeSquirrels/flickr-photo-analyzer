@@ -1,0 +1,12 @@
+# Your Flickr API key, sign-in token and downloaded photo data. Never commit these.
+config.json
+data/
+
+node_modules/
+.claude/
+.DS_Store
+Thumbs.db
+*.log
+
+# Local backups of config.json and data
+backup/

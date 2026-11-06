@@ -1,0 +1,5 @@
+{
+  "apiKey": "your 32-character Flickr API key",
+  "apiSecret": "your 16-character secret",
+  "port": 5177
+}

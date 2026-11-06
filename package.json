@@ -1,0 +1,21 @@
+{
+  "name": "flickr-photo-analyzer",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local app that analyzes your Flickr photos: views, faves, tags, timing, map, albums, cameras, library health and daily stats.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "keywords": [
+    "flickr",
+    "photography",
+    "analytics",
+    "statistics"
+  ]
+}
