@@ -10,3 +10,6 @@ Thumbs.db
 
 # Local backups of config.json and data
 backup/
+
+# Built launcher (make it with launcher/build.bat)
+*.exe

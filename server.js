@@ -9,6 +9,7 @@ const { store, readJSON, writeJSON } = require('./lib/store');
 const sync = require('./lib/sync');
 const { analyze, isUntitled, takenDate, LICENSES } = require('./lib/analyze');
 const changes = require('./lib/changes');
+const social = require('./lib/social');
 
 const ROOT = __dirname;
 const CONFIG_FILE = path.join(ROOT, 'config.json');
@@ -108,6 +109,79 @@ function getAnalysis(nsid) {
 }
 
 function photoUrl(profile, id) { return `https://www.flickr.com/photos/${profile?.pathAlias || profile?.nsid}/${id}/`; }
+
+// ---------- movies, Explore, activity ----------
+const contactsRecentCache = new Map();
+const median = a => { if (!a.length) return 0; const s = [...a].sort((x, y) => x - y), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+const DAY_MS = 86400000;
+
+function getMovies(nsid) {
+  const u = store.user(nsid);
+  const photos = u.get('photos') || [];
+  const info = u.get('videos') || {};
+  const profile = u.get('profile');
+  const now = Date.now() / 1000;
+  const vids = photos.filter(p => p.media === 'video').map(p => ({
+    ...p, duration: info[p.id]?.duration || null, url: photoUrl(profile, p.id),
+    perDay: p.views / Math.max(1, (now - p.uploaded) / 86400),
+  }));
+  const stills = photos.filter(p => p.media !== 'video');
+  const byYear = {};
+  for (const v of vids) { const y = new Date(v.uploaded * 1000).getFullYear(); (byYear[y] ||= { key: String(y), count: 0, views: 0 }); byYear[y].count++; byYear[y].views += v.views; }
+  const lengths = [[0, 15, 'Under 15s'], [15, 60, '15–60s'], [60, 180, '1–3 min'], [180, 600, '3–10 min'], [600, 1e9, '10 min+']]
+    .map(([a, b, key]) => { const g = vids.filter(v => v.duration != null && v.duration >= a && v.duration < b); return { key, count: g.length, medianViews: median(g.map(v => v.views)) }; });
+  return {
+    count: vids.length,
+    views: vids.reduce((s, v) => s + v.views, 0), faves: vids.reduce((s, v) => s + v.faves, 0), comments: vids.reduce((s, v) => s + v.comments, 0),
+    runtime: vids.reduce((s, v) => s + (v.duration || 0), 0), withDuration: vids.filter(v => v.duration != null).length,
+    medianViews: median(vids.map(v => v.views)), photoMedianViews: median(stills.map(p => p.views)),
+    faveRate: (() => { const v = vids.reduce((s, x) => s + x.views, 0); return v ? vids.reduce((s, x) => s + x.faves, 0) / v : 0; })(),
+    photoFaveRate: (() => { const v = stills.reduce((s, x) => s + x.views, 0); return v ? stills.reduce((s, x) => s + x.faves, 0) / v : 0; })(),
+    byYear: Object.values(byYear).sort((a, b) => a.key.localeCompare(b.key)),
+    lengths,
+    items: vids.sort((a, b) => b.views - a.views).map(({ desc, mtags, ...v }) => v),
+  };
+}
+
+function getExplored(nsid) {
+  const u = store.user(nsid);
+  const photos = u.get('photos') || [];
+  const cache = u.get('explore');
+  const { all, todo } = social.exploreDays(photos, cache);
+  const profile = u.get('profile');
+  const byId = new Map(photos.map(p => [p.id, p]));
+  const first = new Map();
+  for (const h of social.exploreHits(cache)) { const f = first.get(h.id); if (!f || h.date < f.date) first.set(h.id, h); }
+  const items = [...first.values()].map(h => {
+    const p = byId.get(h.id);
+    if (!p) return null;
+    const { desc, mtags, ...rest } = p;
+    return { ...rest, exploreDate: h.date, rank: h.rank, daysAfter: Math.round((Date.parse(h.date + 'T12:00:00Z') / 1000 - p.uploaded) / 86400), url: photoUrl(profile, p.id) };
+  }).filter(Boolean).sort((a, b) => b.exploreDate.localeCompare(a.exploreDate));
+  const ids = new Set(items.map(i => i.id));
+  const others = photos.filter(p => p.ispublic && !ids.has(p.id));
+  const byYear = {};
+  for (const i of items) { const y = i.exploreDate.slice(0, 4); byYear[y] = (byYear[y] || 0) + 1; }
+  return {
+    scanned: !!cache, lastScan: cache?.lastScan || null,
+    daysTotal: all.length, daysChecked: all.length - todo.length, daysLeft: todo.length,
+    minutesLeft: Math.ceil((todo.length * 1.2) / 60),
+    count: items.length,
+    medianViews: median(items.map(i => i.views)), otherMedianViews: median(others.map(p => p.views)),
+    medianFaves: median(items.map(i => i.faves)), otherMedianFaves: median(others.map(p => p.faves)),
+    bestRank: items.length ? Math.min(...items.map(i => i.rank)) : null,
+    byYear: Object.entries(byYear).sort().map(([key, count]) => ({ key, count })),
+    items,
+  };
+}
+
+// Fave/comment totals gained over the window, from the daily snapshots. Works for any account,
+// but only as far back as snapshots go.
+function activityFromSnapshots(u, hours) {
+  const base = changes.baseline(u, Math.max(1, Math.round(hours / 24)));
+  const d = changes.diff(u.get('photos') || [], base);
+  return d ? { faves: d.faves, comments: d.comments, views: d.views, date: d.date, approx: d.approx } : null;
+}
 
 // ---------- explorer query ----------
 function queryPhotos(nsid, q) {
@@ -315,6 +389,11 @@ async function handle(req, res) {
     if (!store.user(b.nsid).exists()) return fail(res, 400, 'Sync first');
     return json(res, await sync.exifScan(client(true), b.nsid, { own: isOwn(b.nsid), limit: Number(b.limit) || 0 }));
   }
+  if (p === '/api/explore-scan' && req.method === 'POST') {
+    const b = await readBody(req);
+    if (!store.user(b.nsid).exists()) return fail(res, 400, 'Sync first');
+    return json(res, await sync.exploreScan(client(true), b.nsid));
+  }
   if (p === '/api/cancel' && req.method === 'POST') {
     const b = await readBody(req); sync.cancel(b.nsid, b.kind); return json(res, { ok: true });
   }
@@ -326,8 +405,42 @@ async function handle(req, res) {
 
   // Data endpoints
   const nsid = q.nsid;
-  if (['/api/analysis', '/api/photos', '/api/photo', '/api/export.csv', '/api/albums'].includes(p)) {
+  if (['/api/analysis', '/api/photos', '/api/photo', '/api/export.csv', '/api/albums', '/api/movies', '/api/groups', '/api/contacts', '/api/explored', '/api/activity'].includes(p)) {
     if (!nsid || !store.user(nsid).exists()) return fail(res, 404, 'No data for this account yet. Run a sync.');
+  }
+  if (p === '/api/movies') return json(res, getMovies(nsid));
+  if (p === '/api/groups') {
+    const g = store.user(nsid).get('groups');
+    return json(res, { fetchedAt: g?.fetchedAt || null, own: isOwn(nsid), list: g?.list || null, profile: store.user(nsid).get('profile') });
+  }
+  if (p === '/api/contacts') {
+    const u = store.user(nsid), c = u.get('contacts');
+    const out = { fetchedAt: c?.fetchedAt || null, own: isOwn(nsid), list: c?.list || null, recent: null, recentError: null };
+    if (isOwn(nsid)) {
+      const hit = contactsRecentCache.get(nsid);
+      if (hit && Date.now() - hit.fetchedAt < 10 * 60000 && !q.refresh) out.recent = hit;
+      else {
+        try { out.recent = await social.fetchContactsRecent(client(true)); contactsRecentCache.set(nsid, out.recent); }
+        catch (e) { out.recentError = e.message; if (hit) out.recent = hit; }
+      }
+    }
+    return json(res, out);
+  }
+  if (p === '/api/explored') return json(res, getExplored(nsid));
+  if (p === '/api/activity') {
+    const u = store.user(nsid);
+    let a = u.get('activity');
+    const own = isOwn(nsid);
+    let error = null;
+    if (own && (!a || Date.now() - a.fetchedAt > 15 * 60000 || q.refresh)) {
+      try { a = await social.fetchActivity(client(true), a); u.set('activity', a); } catch (e) { error = e.message; }
+    }
+    const hours = Math.max(1, Math.min(24 * 400, Number(q.hours) || 24));
+    const photosById = new Map((u.get('photos') || []).map(x => [x.id, x]));
+    const w = a ? social.activityWindow(a.events, hours) : null;
+    if (w) for (const ph of w.topPhotos) { const x = photosById.get(ph.id); if (x) Object.assign(ph, { thumb: x.thumb || ph.thumb, title: x.title, views: x.views, totalFaves: x.faves, totalComments: x.comments }); }
+    const counts = a ? Object.fromEntries([24, 168, 336, 720].map(h => { const s = social.activityWindow(a.events, h); return [h, { faves: s.faves, comments: s.comments, people: s.people }]; })) : null;
+    return json(res, { own, error, fetchedAt: a?.fetchedAt || null, since: a?.since || null, window: w, counts, changes: activityFromSnapshots(u, hours) });
   }
   if (p === '/api/analysis') return json(res, getAnalysis(nsid));
   if (p === '/api/photos') return json(res, queryPhotos(nsid, q));

@@ -199,3 +199,26 @@ body.setup-mode .app { grid-template-columns: 1fr; }
   .stepper li.on { flex: 2.4; }
   .copyrow { grid-template-columns: 1fr auto; } .copyrow > span { grid-column: 1 / -1; }
 }
+
+/* people lists, activity feed */
+.people { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }
+.person { display: flex; gap: 10px; align-items: center; padding: 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel2); color: var(--text); min-width: 0; }
+.person:hover { border-color: var(--accent); }
+.person img { width: 40px; height: 40px; border-radius: 50%; flex: none; background: var(--panel); }
+.person > div { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.person b, .person span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.person span { font-size: 12px; color: var(--muted); }
+.contactchip { display: inline-flex; align-items: center; gap: 6px; padding: 2px 10px 2px 2px; color: var(--text); }
+.contactchip img { width: 22px; height: 22px; border-radius: 50%; }
+a.ph { display: block; color: #fff; }
+.feed { display: flex; flex-direction: column; }
+.ev { display: flex; gap: 10px; align-items: flex-start; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.ev:last-child { border-bottom: 0; }
+.ev .av { width: 34px; height: 34px; border-radius: 50%; flex: none; }
+.ev .txt { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.ev .th { width: 52px; height: 52px; border-radius: 8px; object-fit: cover; flex: none; cursor: pointer; }
+.lnk { color: var(--accent); cursor: pointer; }
+.lnk:hover { text-decoration: underline; }
+.tabs .muted { font-size: 11px; }
+.tabs button.on .muted { color: rgba(255,255,255,.8); }
+.nowrap { white-space: nowrap; }

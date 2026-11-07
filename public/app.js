@@ -184,11 +184,11 @@ function renderJobs() {
   for (const j of Object.values(jobs)) {
     if (j.running) {
       const w = j.total ? Math.min(100, (j.done / j.total) * 100) : 5;
-      const what = j.kind === 'exif' ? 'Camera scan' : j.incremental ? 'Checking for changes' : 'Syncing';
+      const what = j.kind === 'exif' ? 'Camera scan' : j.kind === 'explore' ? 'Explore check' : j.incremental ? 'Checking for changes' : 'Syncing';
       parts.push(`<span><span class="spin"></span> ${what}${j.phase && j.phase !== what ? ': ' + esc(j.phase) : ''} ${j.total ? fmt(j.done) + ' / ' + fmt(j.total) : ''}</span><span class="progress"><i style="width:${w}%"></i></span>
         <button class="btn sm" data-cancel="${j.kind}">Stop</button>`);
     } else if (j.error && Date.now() - j.finishedAt < 600000) {
-      parts.push(`<span class="down">${j.kind === 'exif' ? 'Camera scan' : 'Sync'} failed: ${esc(j.error)}</span>`);
+      parts.push(`<span class="down">${j.kind === 'exif' ? 'Camera scan' : j.kind === 'explore' ? 'Explore check' : 'Sync'} failed: ${esc(j.error)}</span>`);
     }
   }
   const meta = state.status?.users.find(u => u.nsid === state.nsid);
@@ -214,6 +214,8 @@ async function pollJobs() {
     const j = jobsFor(state.nsid);
     if (j.sync && !j.sync.error && j.sync.finishedAt > Date.now() - 5000) toast(j.sync.message || 'Sync finished');
     state.data = null; route();
+  } else if (after && state.page === 'explored' && Date.now() - (state.lastExRefresh || 0) > 15000) {
+    state.lastExRefresh = Date.now(); pageExplored();
   } else if (after && state.page === 'cameras' && (jobsFor(state.nsid).exif?.done || 0) - prevExif > 0 && Date.now() - (state.lastCamRefresh || 0) > 15000) {
     state.lastCamRefresh = Date.now(); state.data = null; route(true);
   } else if (!state.data && after && !state.status.users.some(u => u.nsid === state.nsid)) {
@@ -226,7 +228,7 @@ async function startSync() {
 }
 
 // ---------- routing ----------
-const PAGES = { overview: pageOverview, top: pageTop, recent: pageRecent, timing: pageTiming, tags: pageTags, map: pageMap, albums: pageAlbums, cameras: pageCameras, health: pageHealth, explore: pageExplore, settings: pageSettings };
+const PAGES = { movies: () => pageMovies(), explored: () => pageExplored(), groups: () => pageGroups(), contacts: () => pageContacts(), activity: () => pageActivity(), overview: pageOverview, top: pageTop, recent: pageRecent, timing: pageTiming, tags: pageTags, map: pageMap, albums: pageAlbums, cameras: pageCameras, health: pageHealth, explore: pageExplore, settings: pageSettings };
 async function route(keepScroll = false) {
   const h = location.hash.replace(/^#\/?/, '') || 'overview';
   const [page, qs] = h.split('?');
@@ -686,7 +688,7 @@ function pageCameras(d) {
   const job = jobsFor(state.nsid).exif;
   const remaining = e.eligible - e.scanned;
   const scanBtns = `<button class="btn primary" data-scan="500" ${job?.running ? 'disabled' : ''}>Scan top 500</button><button class="btn" data-scan="0" ${job?.running ? 'disabled' : ''}>Scan all ${fmt(remaining)}</button>`;
-  const hours = n => { const h = (n * 1.1) / 3600; return h < 1 ? Math.max(1, Math.round(h * 60)) + ' min' : h.toFixed(1) + ' h'; };
+  const hours = n => { const h = (n * 1.2) / 3600; return h < 1 ? Math.max(1, Math.round(h * 60)) + ' min' : h.toFixed(1) + ' h'; };
   if (!e.scanned) {
     view.innerHTML = `${header('Cameras', '')}<div class="card empty"><div class="big">📸</div>
       <h2>Camera data needs a separate scan</h2>
@@ -726,6 +728,219 @@ function pageCameras(d) {
     catch (err) { toast(err.message, true); }
   });
 }
+
+// ---------- movies ----------
+const dur = s => s == null ? '' : s >= 3600 ? `${Math.floor(s / 3600)}:${String(Math.floor(s / 60) % 60).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}` : `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+const loading = () => { view.innerHTML = `<div class="empty"><span class="spin"></span> Loading…</div>`; };
+const nsidQ = () => 'nsid=' + encodeURIComponent(state.nsid);
+const pageGuard = (fn) => async (...a) => { try { await fn(...a); } catch (e) { view.innerHTML = `<div class="empty"><p>${esc(e.message)}</p></div>`; } };
+const needsSync = (what) => `<div class="card empty"><div class="big">🔄</div><h2>${what} load on the next sync</h2><p class="muted">This was added after your last sync.</p><button class="btn primary" id="syncNow">Sync now</button></div>`;
+function bindSyncNow() { const b = $('#syncNow'); if (b) b.onclick = startSync; }
+
+const pageMovies = pageGuard(async () => {
+  loading();
+  const m = await api('/api/movies?' + nsidQ());
+  if (!m.count) { view.innerHTML = `${header('Movies', '')}<div class="card empty"><div class="big">🎬</div><h2>No videos yet</h2><p class="muted">Videos you upload to Flickr show up here.</p></div>`; return; }
+  const vsP = m.photoMedianViews ? m.medianViews / m.photoMedianViews : null;
+  view.innerHTML = `${header('Movies', `${fmt(m.count)} videos${m.withDuration ? ` · ${dur(m.runtime)} total running time` : ''}`)}
+    <div class="kpis mb">
+      ${kpi('Videos', fmt(m.count))}
+      ${kpi('Total views', compact(m.views), `${fmt(m.faves)} faves · ${fmt(m.comments)} comments`)}
+      ${kpi('Median views', fmt(m.medianViews), vsP ? `${vsP >= 1 ? fmt1(vsP) + '× ' : fmt1(100 - vsP * 100) + '% below '}your photos (${fmt(m.photoMedianViews)})` : '', vsP >= 1 ? 'up' : 'down')}
+      ${kpi('Faves per 1,000 views', fmt1(m.faveRate * 1000), `Photos: ${fmt1(m.photoFaveRate * 1000)}`, m.faveRate >= m.photoFaveRate ? 'up' : 'down')}
+    </div>
+    <div class="grid g2 mb">
+      <div class="card"><h2>Videos by upload year</h2><div class="chart"><canvas id="cMovYr"></canvas></div></div>
+      <div class="card"><h2>Median views by length</h2><div class="chart"><canvas id="cMovLen"></canvas></div></div>
+    </div>
+    <div class="spread mb"><h2 style="margin:0">All videos</h2><div class="tabs" id="movTabs"><button data-l="grid" class="on">Grid</button><button data-l="table">Table</button></div></div>
+    <div id="movList"></div>`;
+  comboChart('cMovYr', m.byYear.map(y => ({ key: y.key, count: y.count, views: y.views })), { countLabel: 'Videos', metric: 'views', metricLabel: 'Views' });
+  comboChart('cMovLen', m.lengths, { countLabel: 'Videos' });
+  const draw = layout => {
+    $$('#movTabs button').forEach(b => b.classList.toggle('on', b.dataset.l === layout));
+    if (layout === 'grid') $('#movList').innerHTML = `<div class="photos">${m.items.map((v, i) => tile(v, { rank: i + 1, badge: v.duration != null ? '▶ ' + dur(v.duration) : '▶' })).join('')}</div>`;
+    else {
+      $('#movList').innerHTML = '<div class="card"><div class="tablewrap" id="tMov"></div></div>';
+      sortableTable('tMov', [
+        { label: '', cls: 'thumbcell', render: r => r.thumb ? `<img loading="lazy" src="${esc(r.thumb)}" alt="" data-id="${esc(r.id)}">` : '' },
+        { label: 'Title', k: 'title', render: r => `<a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.title || 'Untitled')} ↗</a>` },
+        { label: 'Length', k: 'duration', n: 1, render: r => dur(r.duration) || '–' },
+        { label: 'Views', k: 'views', n: 1, render: r => fmt(r.views) },
+        { label: 'Views/day', k: 'perDay', n: 1, render: r => fmt1(r.perDay) },
+        { label: 'Faves', k: 'faves', n: 1, render: r => fmt(r.faves) },
+        { label: 'Comments', k: 'comments', n: 1, render: r => fmt(r.comments) },
+        { label: 'Uploaded', k: 'uploaded', n: 1, render: r => date(r.uploaded) },
+      ], m.items, 'views');
+    }
+  };
+  $$('#movTabs button').forEach(b => b.onclick = () => draw(b.dataset.l));
+  draw('grid');
+});
+
+// ---------- Explore ----------
+const pageExplored = pageGuard(async () => {
+  loading();
+  const x = await api('/api/explored?' + nsidQ());
+  const job = jobsFor(state.nsid).explore;
+  const mins = n => n < 60 ? Math.max(1, n) + ' min' : fmt1(n / 60) + ' h';
+  const scanBtn = label => job?.running
+    ? `<span class="small muted"><span class="spin"></span> Checking Explore… ${fmt(job.done)} / ${fmt(job.total)} days</span> <button class="btn sm" data-cancel-explore>Stop</button>`
+    : `<button class="btn primary" id="exScan">${label}</button>`;
+  if (!x.scanned && !job?.running) {
+    view.innerHTML = `${header('Explored', '')}<div class="card empty"><div class="big">🌟</div>
+      <h2>Find your photos that made Explore</h2>
+      <p class="muted">Flickr doesn't say which photos were in Explore, so the app checks each day's Explore list (500 photos) from the day before each of your uploads to three days after.</p>
+      <p class="muted small">That's ${fmt(x.daysLeft)} days to check, about ${mins(x.minutesLeft)} in the background. You can keep using the app, stop it, and resume later. After that, new days are checked automatically.</p>
+      <div class="row" style="justify-content:center">${scanBtn('Check Explore history')}</div></div>`;
+  } else {
+    view.innerHTML = `${header('Explored', `${fmt(x.daysChecked)} of ${fmt(x.daysTotal)} days checked${x.lastScan ? ' · last checked ' + ago(x.lastScan) : ''}`,
+      job?.running ? scanBtn('') : x.daysLeft ? scanBtn(`Check ${fmt(x.daysLeft)} more days (~${mins(x.minutesLeft)})`) : '')}
+      <div class="kpis mb">
+        ${kpi('Photos in Explore', fmt(x.count), x.daysLeft ? 'so far' : '')}
+        ${kpi('Best position', x.bestRank ? '#' + x.bestRank : '–', 'of 500 that day')}
+        ${kpi('Median views', x.count ? fmt(x.medianViews) : '–', `Your other public photos: ${fmt(x.otherMedianViews)}`, x.count ? 'up' : '')}
+        ${kpi('Median faves', x.count ? fmt(x.medianFaves) : '–', `Others: ${fmt(x.otherMedianFaves)}`, x.count ? 'up' : '')}
+      </div>
+      ${x.count ? `<div class="card mb"><h2>Explore picks by year</h2><div class="chart short"><canvas id="cExYr"></canvas></div></div>
+      <div class="photos">${x.items.map(i => tile(i, { badge: `#${i.rank} · ${new Date(i.exploreDate + 'T12:00:00Z').toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}` })).join('')}</div>`
+      : `<div class="card empty"><p class="muted">${job?.running || x.daysLeft ? 'None found yet. Results appear here as days are checked.' : 'None of your photos were found in Explore.'}</p></div>`}`;
+    if (x.count) barChart('cExYr', x.byYear.map(y => y.key), x.byYear.map(y => y.count), { label: 'Photos in Explore', color: PALETTE[1], fmtY: v => Number.isInteger(v) ? v : '' });
+  }
+  const b = $('#exScan');
+  if (b) b.onclick = async () => {
+    try { await api('/api/explore-scan', { method: 'POST', body: { nsid: state.nsid } }); state.status = await api('/api/status'); renderJobs(); toast('Checking Explore in the background'); pageExplored(); }
+    catch (e) { toast(e.message, true); }
+  };
+  const c = $('[data-cancel-explore]');
+  if (c) c.onclick = async () => { await api('/api/cancel', { method: 'POST', body: { nsid: state.nsid, kind: 'explore' } }); toast('Stopping. Progress is saved.'); };
+});
+
+// ---------- groups ----------
+const pageGroups = pageGuard(async () => {
+  loading();
+  const g = await api('/api/groups?' + nsidQ());
+  if (!g.list) { view.innerHTML = header('Groups', '') + needsSync('Groups'); bindSyncNow(); return; }
+  const me = g.profile?.pathAlias || state.nsid;
+  const gurl = x => `https://www.flickr.com/groups/${encodeURIComponent(x.pathAlias || x.nsid)}/`;
+  const list = g.list;
+  const limited = list.filter(x => x.throttle);
+  const canPost = limited.filter(x => x.throttle.remaining > 0).length;
+  view.innerHTML = `${header('Groups', `${fmt(list.length)} groups${g.own ? '' : ' (public groups only)'}`)}
+    <div class="kpis mb">
+      ${kpi('Groups', fmt(list.length))}
+      ${kpi('Combined members', compact(list.reduce((s, x) => s + x.members, 0)), 'Reach if you post to all of them')}
+      ${kpi('Admin or moderator', fmt(list.filter(x => x.admin || x.moderator).length))}
+      ${g.own ? kpi('Posting limits', fmt(limited.length), `${fmt(canPost)} still open today`) : ''}
+    </div>
+    <div class="card"><div class="filters" style="margin-bottom:10px">
+      <input id="gq" placeholder="Search groups" style="flex:1;min-width:200px">
+      ${g.own ? `<label class="row small"><input type="checkbox" id="gOpen"> Only groups I can post to now</label>` : ''}
+    </div><div class="tablewrap" id="tGroups" style="max-height:none"></div></div>`;
+  const draw = () => {
+    const q = $('#gq').value.trim().toLowerCase(), open = $('#gOpen')?.checked;
+    const rows = list.filter(x => (!q || x.name.toLowerCase().includes(q)) && (!open || !x.throttle || x.throttle.remaining > 0));
+    sortableTable('tGroups', [
+      { label: '', cls: 'thumbcell', render: r => `<img loading="lazy" src="${esc(r.icon)}" alt="" style="border-radius:50%">` },
+      { label: 'Group', k: 'name', render: r => `<a href="${gurl(r)}" target="_blank" rel="noopener">${esc(r.name)} ↗</a>
+          ${r.admin ? '<span class="chip">Admin</span>' : r.moderator ? '<span class="chip">Moderator</span>' : ''}${r.inviteOnly ? ' <span class="chip">Invite only</span>' : ''}${r.adult ? ' <span class="chip">18+</span>' : ''}` },
+      { label: 'Members', k: 'members', n: 1, render: r => fmt(r.members) },
+      { label: 'Photos in pool', k: 'pool', n: 1, render: r => fmt(r.pool) },
+      { label: 'Last active', k: 'lastActivity', n: 1, render: r => r.lastActivity ? ago(r.lastActivity * 1000) : '–' },
+      ...(g.own ? [{ label: 'Posting limit', k: 'limitLeft', n: 1, render: r => r.throttle ? `<span class="nowrap">${r.throttle.count} ${r.throttle.mode === 'ever' ? 'total' : 'per ' + esc(r.throttle.mode)}</span>${r.throttle.remaining != null ? `<br><b class="nowrap ${r.throttle.remaining > 0 ? 'up' : 'down'}">${r.throttle.remaining} left</b>` : ''}` : '<span class="muted">None</span>' }] : []),
+      { label: '', render: r => `<a class="small nowrap" href="${gurl(r)}pool/${encodeURIComponent(me)}/" target="_blank" rel="noopener">${g.own ? 'My' : 'Their'} photos ↗</a>` },
+    ], rows.map(r => ({ ...r, limitLeft: r.throttle ? r.throttle.remaining ?? -1 : 1e9 })), 'members');
+  };
+  $('#gq').oninput = draw; const o = $('#gOpen'); if (o) o.onchange = draw;
+  draw();
+});
+
+// ---------- contacts ----------
+const pageContacts = pageGuard(async (refresh) => {
+  if (!refresh) loading();
+  const c = await api('/api/contacts?' + nsidQ() + (refresh ? '&refresh=1' : ''));
+  if (!c.list) { view.innerHTML = header('Contacts', '') + needsSync('Contacts'); bindSyncNow(); return; }
+  const purl = x => `https://www.flickr.com/photos/${encodeURIComponent(x.pathAlias || x.nsid)}/`;
+  const r = c.recent;
+  const byNsid = new Map(c.list.map(x => [x.nsid, x]));
+  const recentHtml = !c.own ? '' : r ? `
+    <div class="spread"><h2 style="margin:0">New from your contacts</h2><button class="btn sm" id="cRefresh">Refresh</button></div>
+    <p class="small muted">The latest ${fmt(r.photos.length)} uploads from people you follow · updated ${ago(r.fetchedAt)}</p>
+    ${r.uploaders.length ? `<div class="chips mb">${r.uploaders.map(u => { const k = byNsid.get(u.nsid) || {}; return `<a class="chip contactchip" href="${purl({ ...k, nsid: u.nsid })}" target="_blank" rel="noopener" title="Latest ${ago(u.latest * 1000)}"><img src="${esc(k.icon || 'https://www.flickr.com/images/buddyicon.gif')}" alt="">${esc(k.realname || u.name)} <b>${fmt(u.count)}</b></a>`; }).join('')}</div>` : ''}
+    <div class="photos mb">${r.photos.map(p => `<a class="ph" href="${esc(p.url)}" target="_blank" rel="noopener" title="${esc(p.title)}">
+      ${p.thumb ? `<img loading="lazy" src="${esc(p.thumb)}" alt="">` : ''}${p.media === 'video' ? '<span class="badge">▶</span>' : ''}
+      <div class="meta"><div class="t">${esc(p.title || 'Untitled')}</div>${esc(p.ownerName)} · ${ago(p.uploaded * 1000)}</div></a>`).join('')}</div>`
+    : `<div class="card mb"><p class="muted">Couldn't load your contacts' recent uploads${c.recentError ? ': ' + esc(c.recentError) : ''}.</p></div>`;
+  view.innerHTML = `${header('Contacts', `${fmt(c.list.length)} people ${c.own ? 'you follow' : 'this account follows publicly'}`)}
+    ${recentHtml}
+    <div class="card"><div class="filters" style="margin-bottom:10px">
+      <input id="cq" placeholder="Search contacts" style="flex:1;min-width:200px">
+      ${c.own ? `<select id="cf"><option value="">Everyone</option><option value="friend">Friends</option><option value="family">Family</option></select>` : ''}
+      <span class="small muted" id="cCount"></span>
+    </div><div class="people" id="cList"></div></div>`;
+  const draw = () => {
+    const q = $('#cq').value.trim().toLowerCase(), f = $('#cf')?.value;
+    const rows = c.list.filter(x => (!q || (x.username + ' ' + x.realname + ' ' + x.location).toLowerCase().includes(q)) && (!f || x[f]));
+    $('#cCount').textContent = `${fmt(rows.length)} shown`;
+    $('#cList').innerHTML = rows.map(x => `<a class="person" href="${purl(x)}" target="_blank" rel="noopener"><img loading="lazy" src="${esc(x.icon)}" alt="">
+      <div><b>${esc(x.realname || x.username)}</b><span>${esc(x.realname ? x.username : '')}${x.location ? (x.realname ? ' · ' : '') + esc(x.location) : ''}</span>
+      ${x.friend || x.family ? `<span>${x.friend ? '<span class="chip">Friend</span>' : ''}${x.family ? ' <span class="chip">Family</span>' : ''}</span>` : ''}</div></a>`).join('') || '<p class="muted">No matches.</p>';
+  };
+  $('#cq').oninput = draw; const f = $('#cf'); if (f) f.onchange = draw;
+  draw();
+  const rb = $('#cRefresh'); if (rb) rb.onclick = () => pageContacts(true);
+});
+
+// ---------- activity ----------
+const ACT_WINDOWS = [[24, '24 hours'], [168, '7 days'], [336, '14 days'], [720, '30 days']];
+const pageActivity = pageGuard(async () => {
+  const hours = Number(state.params.h) || 24;
+  loading();
+  const a = await api(`/api/activity?${nsidQ()}&hours=${hours}`);
+  const w = a.window, s = a.changes;
+  const tabs = `<div class="tabs mb">${ACT_WINDOWS.map(([h, l]) => `<button data-h="${h}" class="${h === hours ? 'on' : ''}">${l}${a.counts ? ` <span class="muted">${fmt(a.counts[h].faves + a.counts[h].comments)}</span>` : ''}</button>`).join('')}</div>`;
+  const label = ACT_WINDOWS.find(x => x[0] === hours)?.[1] || hours + ' hours';
+  if (!a.own) {
+    view.innerHTML = `${header('Activity', 'Faves and comments on these photos')}${tabs}
+      ${s ? `<div class="kpis mb">${kpi('Faves gained', fmt(s.faves), s.approx ? `Since ${s.date} (oldest snapshot)` : `Since ${s.date}`)}${kpi('Comments gained', fmt(s.comments))}${kpi('Views gained', compact(s.views))}</div>` : ''}
+      <div class="card empty"><p class="muted">Who faved and commented is only available for your own account. ${s ? 'These totals come from the app\'s daily snapshots.' : 'Totals appear once the app has snapshots from earlier days.'}</p></div>`;
+  } else if (!w) {
+    view.innerHTML = `${header('Activity', '')}<div class="card empty"><p class="muted">Couldn't load activity${a.error ? ': ' + esc(a.error) : ''}.</p></div>`;
+  } else {
+    const since = a.since && Date.now() - a.since < hours * 3600000;
+    view.innerHTML = `${header('Activity', `Faves and comments on your photos · updated ${ago(a.fetchedAt)}`)}${tabs}
+      ${since ? `<p class="small muted">The app's activity log starts ${date(a.since / 1000)}, so this window is partly covered. It fills in as the app keeps checking.</p>` : ''}
+      <div class="kpis mb">
+        ${kpi('Faves', fmt(w.faves), `in the last ${label}`)}
+        ${kpi('Comments', fmt(w.comments), `in the last ${label}`)}
+        ${kpi('People', fmt(w.people), 'faved or commented')}
+        ${kpi('Photos', fmt(w.photos), 'got attention')}
+      </div>
+      <div class="card mb"><h2>${w.hourly ? 'By hour' : 'By day'}</h2><div class="chart short"><canvas id="cAct"></canvas></div></div>
+      ${w.feed.length ? `<div class="grid g2 mb">
+        <div class="card"><h2>Photos with the most activity</h2><div class="photos">${w.topPhotos.slice(0, 12).map(p => tile({ ...p, views: p.views ?? 0, faves: p.totalFaves ?? p.faves, comments: p.totalComments ?? p.comments }, { badge: [p.faves ? '★ +' + p.faves : '', p.comments ? '💬 +' + p.comments : ''].filter(Boolean).join(' ') })).join('')}</div></div>
+        <div class="card"><h2>Most active people</h2><div class="people">${w.topPeople.slice(0, 16).map(p => `<a class="person" href="https://www.flickr.com/photos/${esc(p.nsid)}/" target="_blank" rel="noopener"><img loading="lazy" src="${esc(p.icon)}" alt=""><div><b>${esc(p.realname || p.username)}</b><span>${p.faves ? '★ ' + p.faves + ' fave' + (p.faves > 1 ? 's' : '') : ''}${p.faves && p.comments ? ' · ' : ''}${p.comments ? '💬 ' + p.comments + ' comment' + (p.comments > 1 ? 's' : '') : ''}</span></div></a>`).join('')}</div></div>
+      </div>
+      <div class="card"><h2>Everything, newest first</h2><div class="feed">${w.feed.map(e => `<div class="ev">
+        <a href="https://www.flickr.com/photos/${esc(e.user)}/" target="_blank" rel="noopener"><img loading="lazy" class="av" src="${esc(e.icon)}" alt=""></a>
+        <div class="txt"><b>${esc(e.realname || e.username)}</b> ${e.type === 'fave' ? 'faved' : e.type === 'comment' ? 'commented on' : esc(e.type) + ' on'} <span class="lnk" data-id="${esc(e.photo)}">${esc(e.title || 'Untitled')}</span>
+          ${e.text ? `<div class="small muted">“${esc(e.text.replace(/<[^>]+>/g, '').slice(0, 200))}”</div>` : ''}<div class="small muted">${ago(e.t)}</div></div>
+        ${e.thumb ? `<img loading="lazy" class="th" src="${esc(e.thumb)}" alt="" data-id="${esc(e.photo)}">` : ''}</div>`).join('')}</div></div>`
+      : `<div class="card empty"><p class="muted">No faves or comments in the last ${label}.</p></div>`}`;
+    chart('cAct', {
+      type: 'bar',
+      data: {
+        labels: w.buckets.map(b => w.hourly ? new Date(b.t).toLocaleTimeString(undefined, { hour: 'numeric' }) : new Date(b.t).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })),
+        datasets: [
+          { label: 'Faves', data: w.buckets.map(b => b.faves), backgroundColor: PALETTE[1], borderRadius: 3, stack: 's' },
+          { label: 'Comments', data: w.buckets.map(b => b.comments), backgroundColor: PALETTE[0], borderRadius: 3, stack: 's' },
+        ],
+      },
+      options: { scales: { y: { stacked: true, ticks: { precision: 0 }, grid: { color: css('--line') } }, x: { stacked: true, grid: { display: false } } } },
+    });
+  }
+  $$('[data-h]').forEach(b => b.onclick = () => { location.hash = '#/activity?h=' + b.dataset.h; });
+});
 
 function pageHealth(d) {
   const h = d.health, s = h.score;
@@ -878,6 +1093,11 @@ function pageSettings() {
   matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => { applyTheme(); route(true); });
   try { await loadStatus(); } catch (e) { view.innerHTML = `<div class="empty"><p>Can't reach the analyzer server. Is it running?</p><p class="muted">${esc(e.message)}</p></div>`; return; }
   route();
+  // Pick up jobs the server starts on its own (startup checks, automatic Explore/camera scans).
+  setInterval(async () => {
+    if (state.poll || document.hidden) return;
+    try { state.status = await api('/api/status'); renderJobs(); } catch {}
+  }, 30000);
   // Opening the app also checks for changes if the cached data is over an hour old
   // (covers a server that has been left running). The server skips anything checked recently.
   const meta = state.status.users.find(u => u.nsid === state.nsid);

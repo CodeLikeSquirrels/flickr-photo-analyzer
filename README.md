@@ -24,6 +24,10 @@ If Flickr shows you a code instead of returning to the app, use **Flickr showed 
 
 Don't want to sign in? You can analyze any public account from the same screen.
 
+### Taskbar icon (Windows)
+
+Run `launcher\build.bat` to make **Flickr Photo Analyzer.exe** next to `start.bat`. It uses the C# compiler built into Windows, so there's nothing to install. Right-click the exe and choose **Pin to taskbar** (on Windows 11, click **Show more options** first). Clicking it starts the app in a minimized window, or just opens it in your browser if it's already running.
+
 ### Privacy
 
 Everything runs on your computer. The server only talks to Flickr; the page also loads its chart and map libraries from cdnjs and map tiles from OpenStreetMap. Your API key is saved in `config.json`, and your sign-in token and downloaded data are saved in the `data` folder. Both are listed in `.gitignore`, so they're never committed. The server only listens on 127.0.0.1 and rejects requests from other websites.
@@ -41,7 +45,12 @@ You can also supply the key through the `FLICKR_API_KEY` and `FLICKR_API_SECRET`
 | Tags | Tag cloud, strongest tags by median views, does tagging help |
 | Map | Clustered map of geotagged photos, or circles sized by views |
 | Albums | Views per album, median photo views, photos in no album |
+| Movies | Your videos with their length, views, faves and comments; views by upload year and by length, compared with your photos |
 | Cameras | Cameras, lenses, focal length, aperture, ISO, shutter, main camera each year (needs a background scan) |
+| Explored | Your photos that made Flickr Explore, with the date and position (1–500). Needs a one-time background check of each day's Explore list; new days are checked automatically after that |
+| Activity | Who faved and commented on your photos in the last 24 hours, 7, 14 or 30 days, with the busiest photos and most active people |
+| Groups | Every group you're in, linked, with members, pool size, last activity, posting limits and a link to your photos in each pool |
+| Contacts | Your contacts' newest uploads at the top, then everyone you follow, with links to their photostreams |
 | Library health | Discoverability score; untitled, untagged, undescribed, unalbumed, ungeotagged photos with links to fix them |
 | Explore | Filter and sort every photo; grid or table; CSV export |
 
